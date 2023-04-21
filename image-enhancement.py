@@ -115,6 +115,46 @@ def Second_Derivative_Diagonal_TopRight_BottomLeft(Img_Matrix):
 def NormalizeForImageSaving(data):
     return ((data - np.min(data)) / (np.max(data) - np.min(data)) * 255.9).astype(np.uint8)
 
+def psfmat(n, sigma):
+    # create a point spread matrix with width sigma and length n
+    u = [np.arange(-n, n+1)]
+    v = np.exp((-(np.transpose(u)/sigma) ** 2) / 2)
+    v = v / np.sum(v)
+    S = np.zeros((n, n))
+    nv = len(v)
+    for i in range(1, n+1):
+        u = n + 1
+        l2 = max(n - i + 2, 1) - 1
+        u2 = min(n + n - i + 1, nv)
+        S[i-1][0:u] = v[l2:u2, 0]
+    return S
+
+def CG2(U, G1, G2, kappa, lmbda, delta):
+    R = U
+    P = R
+    n1 = G1.shape[1]
+    n2 = G2.shape[1]
+    X = np.zeros((n1, n2))
+    D1 = np.transpose(np.diff(np.eye(n1)))
+    D2 = np.transpose(np.diff(np.eye(n2)))
+    V1 = lmbda * np.transpose(D1) @ D1
+    V2 = lmbda * np.transpose(D2) @ D2
+
+    for it in range(1, 101):
+        Q = G1 @ P @ G2 + kappa * P + V1 @ P + P @ np.transpose(V2)
+        alpha = np.sum(R[:] ** 2) / np.sum(P[:] * Q[:])
+        X = X + alpha * P
+        Rnew = R - alpha * Q
+        rs1 = np.sum(R[:] ** 2)
+        rs2 = np.sum(Rnew[:] ** 2)
+        beta = rs2 / rs1
+        P = Rnew + beta * P
+        R = Rnew
+        rms = np.sqrt(rs1 / (n1 * n2))
+        if rms < delta:
+            break
+    return X
+
 # get images from input folder
 def get_images():
   input_path = "./input"  
@@ -143,7 +183,8 @@ def load_img(filename, extension):
             # CHANGE THE 64 BELOW AND ASK FOR USER INPUT IF NEEDED
             end_index = int(shape[0] / 64)
             for i in range(0, end_index):
-                img = imgs[i:i+63, :]
+                start_index = i * 64
+                img = imgs[start_index:start_index+64, :]
                 loaded_imgs.append(img)
         case ".mat":
             mat = scipy.io.loadmat(filepath)
@@ -154,6 +195,7 @@ def load_img(filename, extension):
 
 def enhance_image(filename, extension):
     img_data = load_img(filename, extension)
+    enhanced_imgs = []
     
     for img in img_data:
         if (img != "none"):
@@ -204,12 +246,38 @@ def enhance_image(filename, extension):
                         normArray[i][j] = -1
                     else:
                         normArray[i][j] = element / (-1 * fivePercentMin)
+        enhanced_imgs.append(NormalizeForImageSaving(normArray))
+    return enhanced_imgs
+
+def superresolution(img, upscale_factor):
+    (n1, n2) = img.shape
+    p1 = upscale_factor * n1
+    p2 = upscale_factor * n2
+    sigma = 0.053 * upscale_factor
+    S1a = psfmat(p1, sigma)
+    S2a = psfmat(p2, sigma)
+    S1 = np.kron(np.eye(n1), np.ones((1, upscale_factor))) @ S1a
+    S2 = np.kron(np.eye(n2), np.ones((1, upscale_factor))) @ S2a
+    
+    U = np.transpose(S1) @ img @ S2
+    G1 = np.transpose(S1) @ S1
+    G2 = np.transpose(S2) @ S2
+    kappa = 0.01
+    lmbda = 100
+    delta = 0.001
+    X = CG2(U, G1, G2, kappa, lmbda, delta)
+    return X
 
 def main():
-    print(get_images)
-    imgs = get_images()
-    for img in imgs:
-        enhance_image(img[0], img[1])
+    img_files = get_images()
+    upscale_factor = 8
+    output_num = 1
+    for file in img_files:
+        enhanced_imgs = enhance_image(file[0], file[1])
+        for img in enhanced_imgs:
+            enhanced_super_img = NormalizeForImageSaving(superresolution(img, upscale_factor))
+            Image.fromarray(enhanced_super_img).save(f"./output/{output_num}.png")
+            output_num += 1
     return
 
 main()
