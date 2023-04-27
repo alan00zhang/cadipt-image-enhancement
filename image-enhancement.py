@@ -1,15 +1,13 @@
-import statistics
-import matplotlib.pyplot as plt
-import cv2 as cv
+print("Loading libraries, please wait...\n")
+
 import numpy as np
 import math
-import cv2
+from cv2 import fastNlMeansDenoising
 import scipy.signal
-import scipy.ndimage
-import scipy.io
-import sklearn.preprocessing
+from scipy import io
 from PIL import Image
 import os
+from time import sleep
 
 # function for adding 0 padding to matrix
 def Add_Padding(Img_Matrix):
@@ -135,13 +133,13 @@ def CG2(U, G1, G2, kappa, lmbda, delta):
     n1 = G1.shape[1]
     n2 = G2.shape[1]
     X = np.zeros((n1, n2))
-    D1 = np.transpose(np.diff(np.eye(n1)))
-    D2 = np.transpose(np.diff(np.eye(n2)))
-    V1 = lmbda * np.transpose(D1) @ D1
-    V2 = lmbda * np.transpose(D2) @ D2
+    D1 = np.diff(np.eye(n1)).transpose()
+    D2 = np.diff(np.eye(n2)).transpose()
+    V1 = lmbda * D1.transpose() @ D1
+    V2 = lmbda * D2.transpose() @ D2
 
     for it in range(1, 101):
-        Q = G1 @ P @ G2 + kappa * P + V1 @ P + P @ np.transpose(V2)
+        Q = G1 @ P @ G2 + kappa * P + V1 @ P + P @ np.array(V2).transpose()
         alpha = np.sum(R[:] ** 2) / np.sum(P[:] * Q[:])
         X = X + alpha * P
         Rnew = R - alpha * Q
@@ -161,20 +159,19 @@ def get_images():
   files = [f for f in os.listdir(input_path) if os.path.isfile(os.path.join(input_path, f))]
   imgs = []
   for file in files:
-    valid, extension = is_valid_file(file)
+    valid, extension, filename = is_valid_file(file)
     if valid:
-      imgs.append((file, extension))
+      imgs.append((filename, extension))
   return imgs
 
 def is_valid_file(filename):
   name, extension = os.path.splitext(filename)
   valid_extensions = [".dat", ".mat", ".jpg", ".jpeg", ".png", ".bmp", ".gif"]
-  return extension in valid_extensions, extension
+  return extension in valid_extensions, extension, name
 
 def load_img(filename, extension):
     input_path = "./input"
-    filepath = f"{input_path}/{filename}"
-    filename = os.path.splitext(filename)[0] # remove extension from filename
+    filepath = f"{input_path}/{filename}{extension}"
     loaded_imgs = []
     match extension:
         case ".dat":
@@ -187,67 +184,63 @@ def load_img(filename, extension):
                 img = imgs[start_index:start_index+64, :]
                 loaded_imgs.append(img)
         case ".mat":
-            mat = scipy.io.loadmat(filepath)
+            mat = io.loadmat(filepath)
             loaded_imgs.append(mat[filename])
+        case ".png" | ".jpg" | ".jpeg":
+            loaded_imgs.append(np.array(Image.open(filepath).convert("L")))
         case _:
-            loaded_imgs.append("none")
+            loaded_imgs.append(np.array([]))
     return loaded_imgs
 
-def enhance_image(filename, extension):
-    img_data = load_img(filename, extension)
-    enhanced_imgs = []
+def enhance_image(img):
+    # denoising
+    img = NormalizeForImageSaving(img)
+    gaussianMatrix = [[1, 2, 3, 2, 1], [2, 4, 6, 4, 2], [3, 6, 9, 6, 3], [2, 4, 6, 4, 2], [1, 2, 3, 2, 1]]
+    cv2denoise = fastNlMeansDenoising(NormalizeForImageSaving(img), None, 3)
+    img = scipy.signal.convolve2d(cv2denoise, gaussianMatrix, boundary="fill")
     
-    for img in img_data:
-        if (img != "none"):
-            # denoising
-            img = NormalizeForImageSaving(img)
-            gaussianMatrix = [[1, 2, 3, 2, 1], [2, 4, 6, 4, 2], [3, 6, 9, 6, 3], [2, 4, 6, 4, 2], [1, 2, 3, 2, 1]]
-            cv2denoise = cv2.fastNlMeansDenoising(NormalizeForImageSaving(img), None, 3)
-            img = scipy.signal.convolve2d(cv2denoise, gaussianMatrix, boundary="fill")
-            
-            # second derivative
-            SVI = np.array(Second_Derivative_Vertical(img))
-            SHI = np.array(Second_Derivative_Horizontal(img))
-            SDTLI = np.array(Second_Derivative_Diagonal_TopLeft_BottomRight(img))
-            SDTRI = np.array(Second_Derivative_Diagonal_TopRight_BottomLeft(img))
+    # second derivative
+    SVI = np.array(Second_Derivative_Vertical(img))
+    SHI = np.array(Second_Derivative_Horizontal(img))
+    SDTLI = np.array(Second_Derivative_Diagonal_TopLeft_BottomRight(img))
+    SDTRI = np.array(Second_Derivative_Diagonal_TopRight_BottomLeft(img))
 
-            # combine 4 derivative images
-            minArray = []
-            for i in range(0, len(SVI)):
-                newMinRow = []
-                for j in range(0, len(SVI[i])):
-                    minimum = min(SVI[i][j], SHI[i][j], SDTLI[i][j], SDTRI[i][j])
-                    newMinRow.append(minimum)
-                minArray.append(newMinRow)
-            
-            # normalize image
-            arrayMin = min(min(minArray))
-            normArray = minArray / (-1 * arrayMin)
-            
-            # threshold image, set all values above 0 to 0
-            for i in range(0, len(normArray)):
-                for j in range(0, len(normArray[i])):
-                    element = normArray[i][j]
-                    if element >= 0:
-                        normArray[i][j] = 0
-                        
-            # get the 5% minimum value of the image
-            flat = np.ndarray.flatten(normArray)
-            sortedArray = np.sort(flat)
-            (dim1, dim2) = normArray.shape # get dimensions of image
-            total_pixels = dim1 * dim2 # get total number of pixels
-            fivePercentMin = sortedArray[round((0.005 * total_pixels)) - 1] # get 5% minimum value
+    # combine 4 derivative images
+    minArray = []
+    for i in range(0, len(SVI)):
+        newMinRow = []
+        for j in range(0, len(SVI[i])):
+            minimum = min(SVI[i][j], SHI[i][j], SDTLI[i][j], SDTRI[i][j])
+            newMinRow.append(minimum)
+        minArray.append(newMinRow)
+    
+    # normalize image
+    arrayMin = min(min(minArray))
+    normArray = minArray / (-1 * arrayMin)
+    
+    # threshold image, set all values above 0 to 0
+    for i in range(0, len(normArray)):
+        for j in range(0, len(normArray[i])):
+            element = normArray[i][j]
+            if element >= 0:
+                normArray[i][j] = 0
+                
+    # get the 5% minimum value of the image
+    flat = np.ndarray.flatten(normArray)
+    sortedArray = np.sort(flat)
+    (dim1, dim2) = normArray.shape # get dimensions of image
+    total_pixels = dim1 * dim2 # get total number of pixels
+    fivePercentMin = sortedArray[round((0.005 * total_pixels)) - 1] # get 5% minimum value
 
-            # threshold image, set all values below 5% minimum to -1, then linear stretch the rest
-            for i in range(0, len(normArray)):
-                for j in range(0, len(normArray[i])):
-                    element = normArray[i][j]
-                    if element <= fivePercentMin:
-                        normArray[i][j] = -1
-                    else:
-                        normArray[i][j] = element / (-1 * fivePercentMin)
-        enhanced_imgs.append(NormalizeForImageSaving(normArray))
-    return enhanced_imgs
+    # threshold image, set all values below 5% minimum to -1, then linear stretch the rest
+    for i in range(0, len(normArray)):
+        for j in range(0, len(normArray[i])):
+            element = normArray[i][j]
+            if element <= fivePercentMin:
+                normArray[i][j] = -1
+            else:
+                normArray[i][j] = element / (-1 * fivePercentMin)
+    return normArray
 
 def superresolution(img, upscale_factor):
     (n1, n2) = img.shape
@@ -259,9 +252,9 @@ def superresolution(img, upscale_factor):
     S1 = np.kron(np.eye(n1), np.ones((1, upscale_factor))) @ S1a
     S2 = np.kron(np.eye(n2), np.ones((1, upscale_factor))) @ S2a
     
-    U = np.transpose(S1) @ img @ S2
-    G1 = np.transpose(S1) @ S1
-    G2 = np.transpose(S2) @ S2
+    U = S1.transpose() @ img @ S2
+    G1 = S1.transpose() @ S1
+    G2 = S2.transpose() @ S2
     kappa = 0.01
     lmbda = 100
     delta = 0.001
@@ -269,15 +262,33 @@ def superresolution(img, upscale_factor):
     return X
 
 def main():
+    if not os.path.exists("./input"):
+        print('Please create a folder named "input" in the same location as this .exe')
+        sleep(4)
+        return
+    
+    if not os.path.exists("./output"):
+        os.mkdir("./output")
+    
     img_files = get_images()
+    if len(img_files) == 0:
+        print("No input files found in input folder.")
+        sleep(4)
+        return
+        
     upscale_factor = 8
-    output_num = 1
+    
     for file in img_files:
-        enhanced_imgs = enhance_image(file[0], file[1])
-        for img in enhanced_imgs:
-            enhanced_super_img = NormalizeForImageSaving(superresolution(img, upscale_factor))
-            Image.fromarray(enhanced_super_img).save(f"./output/{output_num}.png")
-            output_num += 1
+        img_data = load_img(file[0], file[1])
+        output_num = 1
+        for img in img_data:
+            if len(img.shape) >= 2:
+                enhanced_img = enhance_image(img)
+                enhanced_super_img = NormalizeForImageSaving(superresolution(enhanced_img, upscale_factor))
+                output_filename = f"./output/{file[0]}_{output_num}.png" if len(img_data) > 1 else f"./output/{file[0]}.png"
+                Image.fromarray(enhanced_super_img).save(output_filename)
+                print(f"Enhanced {output_filename}")
+                output_num += 1
     return
 
 main()
